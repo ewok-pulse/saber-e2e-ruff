@@ -1,8 +1,8 @@
 //! Cycle detection for recursive types.
 //!
-//! The visitors here ([`TypeTransformer`] and [`PairVisitor`]) are used in methods that
-//! recursively visit types to transform them (e.g. [`Type::apply_type_mapping`]) or to
-//! decide a relation between a pair of types (e.g. [`Type::has_relation_to`]).
+//! The visitors here are used in methods that recursively visit types to transform them (e.g.
+//! [`Type::apply_type_mapping`]) or to decide a relation between a pair of types (e.g.
+//! [`Type::has_relation_to`]).
 //!
 //! The typical pattern is that the "entry" method (e.g. [`Type::apply_type_mapping`]) will create
 //! a visitor and pass it to the recursive method (e.g. [`Type::apply_type_mapping_impl`]).
@@ -183,19 +183,28 @@ impl<T> Default for ActiveRecursionDetector<T> {
 }
 
 impl<T: Hash + Eq + Clone> ActiveRecursionDetector<T> {
-    pub(crate) fn visit<R>(
+    pub(crate) fn visit_or_else<R>(
         &self,
-        item: &T,
-        on_cycle: impl FnOnce() -> R,
+        item: T,
+        is_cycle: impl FnOnce(&FxHashSet<T>, &T) -> bool,
+        on_cycle: impl FnOnce(T) -> R,
         func: impl FnOnce() -> R,
     ) -> R {
+        let is_cycle = {
+            let seen = self.seen.borrow();
+            is_cycle(&seen, &item)
+        };
+        if is_cycle {
+            return on_cycle(item);
+        }
+
         if !self.seen.borrow_mut().insert(item.clone()) {
-            return on_cycle();
+            return on_cycle(item);
         }
 
         let ret = func();
 
-        self.seen.borrow_mut().remove(item);
+        self.seen.borrow_mut().remove(&item);
 
         ret
     }
