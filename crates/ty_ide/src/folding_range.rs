@@ -1168,6 +1168,287 @@ finally:
     }
 
     #[test]
+    fn test_folding_range_multiline_block_headers() {
+        let test = CursorTest::builder()
+            .source(
+                "main.py",
+                r#"
+def foo(
+    x: int,
+    y: str,
+) -> None:
+    pass
+
+class Repository[
+    Model,
+    Key,
+](
+    Mapping[Key, Model],
+    Protocol,
+):
+    pass
+
+if (
+    first
+    and second
+):
+    pass
+
+for (
+    key,
+    value,
+) in (
+    items
+):
+    pass
+
+with (
+    open("a") as a,
+    open("b") as b,
+):
+    pass
+
+try:
+    pass
+except (
+    ValueError,
+    TypeError,
+) as error:
+    raise error
+<CURSOR>
+"#,
+            )
+            .build();
+
+        assert_snapshot!(test.folding_ranges(), @r#"
+        info[folding-range]: Folding Range
+         --> main.py:2:9
+          |
+        2 |   def foo(
+          |  _________^
+        3 | |     x: int,
+        4 | |     y: str,
+          | |____________^
+          |
+
+        info[folding-range]: Folding Range
+         --> main.py:5:11
+          |
+        5 |   ) -> None:
+          |  ___________^
+        6 | |     pass
+          | |________^
+          |
+
+        info[folding-range]: Folding Range
+          --> main.py:8:18
+           |
+         8 |   class Repository[
+           |  __________________^
+         9 | |     Model,
+        10 | |     Key,
+           | |_________^
+           |
+
+        info[folding-range]: Folding Range
+          --> main.py:11:3
+           |
+        11 |   ](
+           |  ___^
+        12 | |     Mapping[Key, Model],
+        13 | |     Protocol,
+           | |______________^
+           |
+
+        info[folding-range]: Folding Range
+          --> main.py:14:3
+           |
+        14 |   ):
+           |  ___^
+        15 | |     pass
+           | |________^
+           |
+
+        info[folding-range]: Folding Range
+          --> main.py:17:5
+           |
+        17 |   if (
+           |  _____^
+        18 | |     first
+        19 | |     and second
+           | |_______________^
+           |
+
+        info[folding-range]: Folding Range
+          --> main.py:20:3
+           |
+        20 |   ):
+           |  ___^
+        21 | |     pass
+           | |________^
+           |
+
+        info[folding-range]: Folding Range
+          --> main.py:23:6
+           |
+        23 |   for (
+           |  ______^
+        24 | |     key,
+        25 | |     value,
+           | |___________^
+           |
+
+        info[folding-range]: Folding Range
+          --> main.py:26:7
+           |
+        26 |   ) in (
+           |  _______^
+        27 | |     items
+           | |__________^
+           |
+
+        info[folding-range]: Folding Range
+          --> main.py:28:3
+           |
+        28 |   ):
+           |  ___^
+        29 | |     pass
+           | |________^
+           |
+
+        info[folding-range]: Folding Range
+          --> main.py:31:7
+           |
+        31 |   with (
+           |  _______^
+        32 | |     open("a") as a,
+        33 | |     open("b") as b,
+           | |____________________^
+           |
+
+        info[folding-range]: Folding Range
+          --> main.py:34:3
+           |
+        34 |   ):
+           |  ___^
+        35 | |     pass
+           | |________^
+           |
+
+        info[folding-range]: Folding Range
+          --> main.py:37:5
+           |
+        37 |   try:
+           |  _____^
+        38 | |     pass
+           | |________^
+           |
+
+        info[folding-range]: Folding Range
+          --> main.py:39:9
+           |
+        39 |   except (
+           |  _________^
+        40 | |     ValueError,
+        41 | |     TypeError,
+           | |_______________^
+           |
+
+        info[folding-range]: Folding Range
+          --> main.py:42:12
+           |
+        42 |   ) as error:
+           |  ____________^
+        43 | |     raise error
+           | |_______________^
+           |
+        "#);
+    }
+
+    #[test]
+    fn test_folding_range_multiline_case_block_headers() {
+        let test = CursorTest::builder()
+            .source(
+                "main.py",
+                r#"
+match value:
+    case [
+        first,
+        second,
+    ]:
+        handle_sequence()
+    case {
+        "kind": kind,
+        "payload": payload,
+    }:
+        handle_mapping()
+<CURSOR>
+"#,
+            )
+            .build();
+
+        assert_snapshot!(test.folding_ranges(), @r#"
+        info[folding-range]: Folding Range
+          --> main.py:2:13
+           |
+         2 |   match value:
+           |  _____________^
+         3 | |     case [
+         4 | |         first,
+         5 | |         second,
+         6 | |     ]:
+         7 | |         handle_sequence()
+         8 | |     case {
+         9 | |         "kind": kind,
+        10 | |         "payload": payload,
+        11 | |     }:
+        12 | |         handle_mapping()
+           | |________________________^
+           |
+
+        info[folding-range]: Folding Range
+         --> main.py:3:11
+          |
+        3 |       case [
+          |  ___________^
+        4 | |         first,
+        5 | |         second,
+        6 | |     ]:
+          | |____^
+          |
+
+        info[folding-range]: Folding Range
+         --> main.py:6:7
+          |
+        6 |       ]:
+          |  _______^
+        7 | |         handle_sequence()
+          | |_________________________^
+          |
+
+        info[folding-range]: Folding Range
+          --> main.py:8:11
+           |
+         8 |       case {
+           |  ___________^
+         9 | |         "kind": kind,
+        10 | |         "payload": payload,
+        11 | |     }:
+           | |____^
+           |
+
+        info[folding-range]: Folding Range
+          --> main.py:11:7
+           |
+        11 |       }:
+           |  _______^
+        12 | |         handle_mapping()
+           | |________________________^
+           |
+        "#);
+    }
+
+    #[test]
     fn test_folding_range_collections() {
         let test = CursorTest::builder()
             .source(
