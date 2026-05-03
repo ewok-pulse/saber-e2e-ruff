@@ -1277,11 +1277,15 @@ fn loop_header_reachability_impl<'db>(
     let mut deleted_reachability = Truthiness::AlwaysFalse;
     let mut reachable_bindings = FxIndexSet::default();
     let mut reachability_cache = FxHashMap::default();
+    let live_bindings: Vec<_> = loop_header.bindings_for_place(place).collect();
+    let live_binding_count = live_bindings.len();
+    let use_exact_reachability = live_binding_count <= 16
+        && use_def.reachability_constraints().used_interiors().len() <= 256;
 
-    for live_binding in loop_header.bindings_for_place(place) {
+    for live_binding in live_bindings {
         let reachability = if is_cycle_initial {
             Truthiness::Ambiguous
-        } else {
+        } else if use_exact_reachability {
             evaluate_reachability_cached(
                 db,
                 use_def.predicates(),
@@ -1289,6 +1293,12 @@ fn loop_header_reachability_impl<'db>(
                 live_binding.reachability_constraint(),
                 &mut reachability_cache,
             )
+        } else if live_binding.reachability_constraint()
+            == ScopedReachabilityConstraintId::ALWAYS_FALSE
+        {
+            Truthiness::AlwaysFalse
+        } else {
+            Truthiness::Ambiguous
         };
         // Skip unreachable bindings.
         if reachability.is_always_false() {
@@ -1391,6 +1401,9 @@ fn place_from_bindings_impl<'db>(
     };
     let mut deleted_reachability = Truthiness::AlwaysFalse;
 
+    // Evaluate this lazily because we don't always need it (for example, if there are no visible
+    // bindings at all, we don't need it), and it can cause us to evaluate reachability constraint
+    // expressions, which is extra work and can lead to cycles.
     let mut first_definition = None;
     let mut only_loop_header_bindings = true;
 
