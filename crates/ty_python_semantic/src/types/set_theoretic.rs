@@ -138,23 +138,6 @@ impl<'db> UnionType<'db> {
             .build()
     }
 
-    /// A version of [`UnionType::map`] that does not unpack type aliases.
-    pub(crate) fn map_leave_aliases(
-        self,
-        db: &'db dyn Db,
-        transform_fn: impl FnMut(&Type<'db>) -> Type<'db>,
-    ) -> Type<'db> {
-        self.elements(db)
-            .iter()
-            .map(transform_fn)
-            .fold(
-                UnionBuilder::new(db).unpack_aliases(false),
-                UnionBuilder::add,
-            )
-            .recursively_defined(self.recursively_defined(db))
-            .build()
-    }
-
     /// A fallible version of [`UnionType::map`].
     ///
     /// For each element in `self`, `transform_fn` is called on that element.

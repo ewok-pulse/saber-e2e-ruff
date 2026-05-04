@@ -4,7 +4,9 @@ use crate::{
     Db,
     types::{
         GenericContext, Type, definition_expression_type,
-        display::qualified_name_components_from_scope, generics::Specialization, visitor,
+        display::qualified_name_components_from_scope,
+        generics::{RecursiveSpecializationRelation, Specialization},
+        visitor,
     },
 };
 use ty_python_core::{
@@ -257,6 +259,29 @@ impl<'db> TypeAliasType<'db> {
             TypeAliasType::PEP695(type_alias) => type_alias.specialization(db),
             TypeAliasType::ManualPEP695(_) => None,
         }
+    }
+
+    /// Classifies this alias relative to a possible recursive ancestor.
+    pub(super) fn recursive_relation_from(
+        self,
+        db: &'db dyn Db,
+        previous: Self,
+    ) -> RecursiveSpecializationRelation {
+        if self == previous {
+            return RecursiveSpecializationRelation::Exact;
+        }
+
+        if self.definition(db) != previous.definition(db) {
+            return RecursiveSpecializationRelation::Unrelated;
+        }
+
+        let (Some(previous), Some(current)) =
+            (previous.specialization(db), self.specialization(db))
+        else {
+            return RecursiveSpecializationRelation::Unrelated;
+        };
+
+        current.recursive_relation_from(db, previous)
     }
 
     pub(super) fn apply_function_specialization(self, db: &'db dyn Db, ty: Type<'db>) -> Type<'db> {
