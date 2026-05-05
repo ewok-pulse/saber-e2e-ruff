@@ -10,8 +10,8 @@
 //! all references to these externally-visible symbols therefore requires
 //! an expensive search of all source files in the workspace.
 
-use crate::goto::GotoTarget;
-use crate::{Db, NavigationTarget, NavigationTargets, ReferenceKind, ReferenceTarget};
+use crate::goto::{Definitions, GotoTarget};
+use crate::{Db, ReferenceKind, ReferenceTarget};
 use ruff_db::files::File;
 use ruff_python_ast::find_node::{CoveringNode, covering_node};
 use ruff_python_ast::token::Tokens;
@@ -20,7 +20,7 @@ use ruff_python_ast::{
     visitor::source_order::{SourceOrderVisitor, TraversalSignal},
 };
 use ruff_text_size::{Ranged, TextRange};
-use ty_python_semantic::{ImportAliasResolution, SemanticModel};
+use ty_python_semantic::{ImportAliasResolution, ResolvedDefinition, SemanticModel};
 
 /// Mode for references search behavior
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,8 +79,8 @@ pub(crate) fn references(
 ) -> Option<Vec<ReferenceTarget>> {
     let model = SemanticModel::new(db, file);
     let target_definitions = goto_target
-        .get_definition_targets(&model, mode.to_import_alias_resolution())?
-        .declaration_targets(&model, goto_target)?;
+        .definitions(&model, mode.to_import_alias_resolution())?
+        .goto_declaration(&model, goto_target)?;
 
     // Extract the target text from the goto target for fast comparison
     let target_text = goto_target.to_string()?;
@@ -164,7 +164,7 @@ pub(crate) fn references(
 fn references_for_parameter_keyword_arguments_across_files(
     db: &dyn Db,
     file: File,
-    target_definitions: &NavigationTargets,
+    target_definitions: &Definitions<'_>,
     target_text: &str,
     mode: ReferencesMode,
     references: &mut Vec<ReferenceTarget>,
@@ -193,7 +193,7 @@ fn references_for_parameter_keyword_arguments_across_files(
 fn references_for_keyword_arguments_in_file(
     db: &dyn Db,
     file: File,
-    target_definitions: &NavigationTargets,
+    target_definitions: &Definitions<'_>,
     target_text: &str,
     mode: ReferencesMode,
     references: &mut Vec<ReferenceTarget>,
@@ -264,29 +264,12 @@ fn source_contains_keyword_argument_candidate(source: &str, name: &str) -> bool 
     false
 }
 
-/// Return true if the declaration-target sets intersect.
-///
-/// A symbol can resolve to multiple declaration targets (for example, overload groups or an
-/// import binding plus its underlying definition). Intersection semantics avoid missing valid
-/// references/renames when target ordering differs.
-fn navigation_targets_intersect(
-    target_definitions: &NavigationTargets,
-    current_targets: &NavigationTargets,
-) -> bool {
-    target_definitions.iter().any(|target_definition| {
-        current_targets.iter().any(|current_target| {
-            current_target.file == target_definition.file
-                && current_target.focus_range == target_definition.focus_range
-        })
-    })
-}
-
 /// Find all references to a local symbol within the current file.
 /// The behavior depends on the provided mode.
 fn references_for_file(
     db: &dyn Db,
     file: File,
-    target_definitions: &NavigationTargets,
+    target_definitions: &Definitions<'_>,
     target_text: &str,
     mode: ReferencesMode,
     references: &mut Vec<ReferenceTarget>,
@@ -332,7 +315,7 @@ fn is_symbol_externally_visible(goto_target: &GotoTarget<'_>) -> bool {
 /// when the owning callable is visible outside of the current module.
 fn parameter_owner_is_externally_visible(
     db: &dyn Db,
-    target_definitions: &NavigationTargets,
+    target_definitions: &Definitions<'_>,
 ) -> bool {
     target_definitions
         .iter()
@@ -341,13 +324,14 @@ fn parameter_owner_is_externally_visible(
 
 fn parameter_owner_is_externally_visible_for_target(
     db: &dyn Db,
-    target: &NavigationTarget,
+    definition: &ResolvedDefinition,
 ) -> bool {
+    let target = definition.focus_range(db);
     let file = target.file();
     let parsed = ruff_db::parsed::parsed_module(db, file);
     let module = parsed.load(db);
 
-    let covering = covering_node(module.syntax().into(), target.focus_range());
+    let covering = covering_node(module.syntax().into(), target.range());
     let Ok(parameter_covering) =
         covering.find_last(|node| matches!(node, AnyNodeRef::Parameter(_)))
     else {
@@ -396,7 +380,7 @@ fn parameter_owner_is_externally_visible_for_target(
 struct LocalReferencesFinder<'a> {
     model: &'a SemanticModel<'a>,
     tokens: &'a Tokens,
-    target_definitions: &'a NavigationTargets,
+    target_definitions: &'a Definitions<'a>,
     references: &'a mut Vec<ReferenceTarget>,
     mode: ReferencesMode,
     target_text: &'a str,
@@ -538,7 +522,7 @@ impl<'a> SourceOrderVisitor<'a> for KeywordArgumentReferencesFinder<'a> {
     }
 }
 
-impl LocalReferencesFinder<'_> {
+impl<'a> LocalReferencesFinder<'a> {
     /// Check if we should include declarations based on the current mode
     fn should_include_declaration(&self) -> bool {
         matches!(
@@ -550,7 +534,7 @@ impl LocalReferencesFinder<'_> {
         )
     }
 
-    /// Helper method to check identifier references for declarations
+    /// Helper method to check identifier references.
     fn check_identifier_reference(&mut self, identifier: &ast::Identifier) {
         // Quick text-based check first
         if identifier.id != self.target_text {
@@ -563,39 +547,39 @@ impl LocalReferencesFinder<'_> {
         self.check_reference_from_covering_node(&covering_node);
     }
 
-    /// Returns true if the covering node's resolved definitions intersect `target_definitions`.
-    fn matches_target_definitions(&self, covering_node: &CoveringNode<'_>) -> bool {
+    /// Returns the covering node's resolved definitions.
+    fn definitions_for_covering_node(
+        &self,
+        covering_node: &CoveringNode<'_>,
+    ) -> Option<Definitions<'a>> {
         // Use the start of the covering node as the offset. Any offset within
         // the node is fine here. Offsets matter only for import statements
         // where the identifier might be a multi-part module name.
         let offset = covering_node.node().start();
-        let Some(goto_target) =
-            GotoTarget::from_covering_node(self.model, covering_node, offset, self.tokens)
-        else {
-            return false;
-        };
+        let goto_target =
+            GotoTarget::from_covering_node(self.model, covering_node, offset, self.tokens)?;
 
-        // Get the definitions for this goto target
-        let Some(current_definitions) = goto_target
-            .get_definition_targets(self.model, self.mode.to_import_alias_resolution())
-            .and_then(|definitions| definitions.declaration_targets(self.model, &goto_target))
-        else {
-            return false;
-        };
+        let definitions = goto_target
+            .definitions(self.model, self.mode.to_import_alias_resolution())?
+            .goto_declaration(self.model, &goto_target)?;
 
-        // Check if any of the current definitions match our target definitions
-        navigation_targets_intersect(self.target_definitions, &current_definitions)
+        Some(definitions)
     }
 
     /// Pushes a reference target when the covering node resolves to any target definition
     fn check_reference_from_covering_node(&mut self, covering_node: &CoveringNode<'_>) {
-        if self.matches_target_definitions(covering_node) {
-            // Determine if this is a read or write reference
-            let kind = self.determine_reference_kind(covering_node);
-            let target =
-                ReferenceTarget::new(self.model.file(), covering_node.node().range(), kind);
-            self.references.push(target);
+        let Some(current_definitions) = self.definitions_for_covering_node(covering_node) else {
+            return;
+        };
+
+        // Check if any of the current definitions match our target definitions
+        if !self.target_definitions.intersects(&current_definitions) {
+            return;
         }
+
+        let kind = self.determine_reference_kind(covering_node);
+        let target = ReferenceTarget::new(self.model.file(), covering_node.node().range(), kind);
+        self.references.push(target);
     }
 
     /// Determine whether a reference is a read or write operation based on its context
