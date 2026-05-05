@@ -321,12 +321,12 @@ impl<'a> FoldingRangeVisitor<'a> {
             .map(Ranged::start)
     }
 
-    /// Adds folding ranges for any multi-line delimiter pairs (i.e., `()`, `[]`, or `{}`) in a block header.
-    fn add_block_header_ranges(&mut self, parent: AnyNodeRef<'a>, header_range: TextRange) {
+    /// Finds inner ranges for delimiter pairs (i.e., `()`, `[]`, or `{}`) in the given range.
+    fn delimiter_inner_ranges(&self, range: TextRange) -> Vec<TextRange> {
         let mut delimiter_stack: Vec<(TokenKind, TextSize)> = Vec::new();
         let mut delimiter_ranges = Vec::new();
 
-        for token in self.tokens.in_range(header_range) {
+        for token in self.tokens.in_range(range) {
             match token.kind() {
                 TokenKind::Lpar => delimiter_stack.push((TokenKind::Rpar, token.end())),
                 TokenKind::Lsqb => delimiter_stack.push((TokenKind::Rsqb, token.end())),
@@ -350,7 +350,12 @@ impl<'a> FoldingRangeVisitor<'a> {
                 .then_with(|| right.end().cmp(&left.end()))
         });
 
-        for range in delimiter_ranges {
+        delimiter_ranges
+    }
+
+    /// Adds folding ranges for any multi-line delimiter pairs (i.e., `()`, `[]`, or `{}`) in a block header.
+    fn add_block_header_ranges(&mut self, parent: AnyNodeRef<'a>, header_range: TextRange) {
+        for range in self.delimiter_inner_ranges(header_range) {
             if self.add_range(range) {
                 self.active_block_header_delimiter_ranges
                     .push(ActiveBlockHeaderDelimiterRange { parent, range });
