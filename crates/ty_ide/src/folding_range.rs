@@ -353,6 +353,33 @@ impl<'a> FoldingRangeVisitor<'a> {
         delimiter_ranges
     }
 
+    /// Returns the range inside the given outer delimiters, or the original range if they are absent.
+    fn delimiter_preserving_range(
+        &self,
+        range: TextRange,
+        opening: TokenKind,
+        closing: TokenKind,
+    ) -> TextRange {
+        let mut tokens = self
+            .tokens
+            .in_range(range)
+            .iter()
+            .filter(|token| !token.kind().is_trivia());
+
+        let Some(opening_token) = tokens.next() else {
+            return range;
+        };
+        let Some(closing_token) = tokens.next_back() else {
+            return range;
+        };
+
+        if opening_token.kind() == opening && closing_token.kind() == closing {
+            TextRange::new(opening_token.end(), closing_token.start())
+        } else {
+            range
+        }
+    }
+
     /// Adds folding ranges for any multi-line delimiter pairs (i.e., `()`, `[]`, or `{}`) in a block header.
     fn add_block_header_ranges(&mut self, parent: AnyNodeRef<'a>, header_range: TextRange) {
         for range in self.delimiter_inner_ranges(header_range) {
@@ -539,35 +566,72 @@ impl<'a> SourceOrderVisitor<'a> for FoldingRangeVisitor<'a> {
 
             // Multiline expressions
             AnyNodeRef::ExprList(list) => {
-                self.add_expression_range(list.range());
+                self.add_expression_range(self.delimiter_preserving_range(
+                    list.range(),
+                    TokenKind::Lsqb,
+                    TokenKind::Rsqb,
+                ));
             }
             AnyNodeRef::ExprTuple(tuple)
                 // Only fold parenthesized tuples.
                 if tuple.parenthesized => {
-                    self.add_expression_range(tuple.range());
+                    self.add_expression_range(self.delimiter_preserving_range(
+                        tuple.range(),
+                        TokenKind::Lpar,
+                        TokenKind::Rpar,
+                    ));
                 }
             AnyNodeRef::ExprDict(dict) => {
-                self.add_expression_range(dict.range());
+                self.add_expression_range(self.delimiter_preserving_range(
+                    dict.range(),
+                    TokenKind::Lbrace,
+                    TokenKind::Rbrace,
+                ));
             }
             AnyNodeRef::ExprSet(set) => {
-                self.add_expression_range(set.range());
+                self.add_expression_range(self.delimiter_preserving_range(
+                    set.range(),
+                    TokenKind::Lbrace,
+                    TokenKind::Rbrace,
+                ));
             }
             AnyNodeRef::ExprListComp(listcomp) => {
-                self.add_expression_range(listcomp.range());
+                self.add_expression_range(self.delimiter_preserving_range(
+                    listcomp.range(),
+                    TokenKind::Lsqb,
+                    TokenKind::Rsqb,
+                ));
             }
             AnyNodeRef::ExprSetComp(setcomp) => {
-                self.add_expression_range(setcomp.range());
+                self.add_expression_range(self.delimiter_preserving_range(
+                    setcomp.range(),
+                    TokenKind::Lbrace,
+                    TokenKind::Rbrace,
+                ));
             }
             AnyNodeRef::ExprDictComp(dictcomp) => {
-                self.add_expression_range(dictcomp.range());
+                self.add_expression_range(self.delimiter_preserving_range(
+                    dictcomp.range(),
+                    TokenKind::Lbrace,
+                    TokenKind::Rbrace,
+                ));
             }
             AnyNodeRef::ExprGenerator(generator) => {
-                self.add_expression_range(generator.range());
+                let range = if generator.parenthesized {
+                    self.delimiter_preserving_range(
+                        generator.range(),
+                        TokenKind::Lpar,
+                        TokenKind::Rpar,
+                    )
+                } else {
+                    generator.range()
+                };
+                self.add_expression_range(range);
             }
 
             // Function calls with arguments spanning multiple lines
             AnyNodeRef::ExprCall(call) => {
-                self.add_expression_range(call.range());
+                self.add_expression_range(call.arguments.inner_range());
             }
 
             // String and bytes literals
@@ -586,7 +650,11 @@ impl<'a> SourceOrderVisitor<'a> for FoldingRangeVisitor<'a> {
 
             // Type parameter lists
             AnyNodeRef::TypeParams(params) => {
-                self.add_expression_range(params.range());
+                self.add_expression_range(self.delimiter_preserving_range(
+                    params.range(),
+                    TokenKind::Lsqb,
+                    TokenKind::Rsqb,
+                ));
             }
 
             _ => {}
