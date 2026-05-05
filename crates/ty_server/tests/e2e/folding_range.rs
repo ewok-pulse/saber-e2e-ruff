@@ -65,6 +65,41 @@ match value:
 }
 
 #[test]
+fn folding_range_expression_delimiters() -> Result<()> {
+    let workspace_root = SystemPath::new("src");
+    let foo = SystemPath::new("src/foo.py");
+    let foo_content = r#"result = call(
+    first,
+    second,
+)
+
+values = [
+    1,
+    2,
+]
+
+type Alias[
+    T,
+    U,
+] = tuple[T, U]
+"#;
+
+    let mut server = TestServerBuilder::new()?
+        .with_workspace(workspace_root, None)?
+        .with_file(foo, foo_content)?
+        .build()
+        .wait_until_workspaces_are_initialized();
+
+    server.open_text_document(foo, foo_content, 1);
+
+    let ranges = server.folding_range_request(&server.file_uri(foo));
+
+    insta::assert_json_snapshot!(ranges);
+
+    Ok(())
+}
+
+#[test]
 fn folding_range_notebook_cells_are_filtered_to_the_requested_cell() -> Result<()> {
     let mut server = TestServerBuilder::new()?
         .build()
