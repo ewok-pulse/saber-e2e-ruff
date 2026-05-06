@@ -975,7 +975,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             .ok()
             .map(|binding| binding.return_type(db)),
 
-            (lhs, rhs, ast::Operator::Add) if self.fallback_type().is_none() => {
+            (lhs, rhs, ast::Operator::Add) => {
                 if let Some(lhs_tuple) = lhs.exact_tuple_instance_spec(db)
                     && let Some(rhs_tuple) = rhs.exact_tuple_instance_spec(db)
                 {

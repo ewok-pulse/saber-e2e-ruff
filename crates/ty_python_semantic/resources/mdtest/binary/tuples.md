@@ -52,8 +52,7 @@ def _(one_two: OneTwo, x: IntTuple, y: StrTuple, three_four: ThreeFour):
 
 ## Augmented concatenation in loops
 
-The non-in-place fallback for `+=` should not infer an increasingly precise fixed tuple shape on
-every cycle iteration.
+Cycle recovery should not infer an increasingly precise fixed tuple shape on every iteration.
 
 ```py
 from typing import TypeAlias
