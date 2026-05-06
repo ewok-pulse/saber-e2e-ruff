@@ -440,12 +440,13 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
                             left_ty,
                             constraints,
                             |constraint| {
-                                self.infer_binary_expression_type(
+                                self.infer_binary_expression_type_impl(
                                     node,
                                     emitted_division_by_zero_diagnostic,
                                     constraint,
                                     constraint,
                                     op,
+                                    visitor,
                                 )
                             },
                         )
@@ -773,21 +774,23 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
                         LiteralValueTypeKind::Bool(b1),
                         LiteralValueTypeKind::Bool(_) | LiteralValueTypeKind::Int(_),
                         op,
-                    ) => self.infer_binary_expression_type(
+                    ) => self.infer_binary_expression_type_impl(
                         node,
                         emitted_division_by_zero_diagnostic,
                         Type::int_literal(i64::from(b1)),
                         right_ty,
                         op,
+                        visitor,
                     ),
 
                     (LiteralValueTypeKind::Int(_), LiteralValueTypeKind::Bool(b2), op) => self
-                        .infer_binary_expression_type(
+                        .infer_binary_expression_type_impl(
                             node,
                             emitted_division_by_zero_diagnostic,
                             left_ty,
                             Type::int_literal(i64::from(b2)),
                             op,
+                            visitor,
                         ),
 
                     (
@@ -972,7 +975,7 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
             .ok()
             .map(|binding| binding.return_type(db)),
 
-            (lhs, rhs, ast::Operator::Add) => {
+            (lhs, rhs, ast::Operator::Add) if self.fallback_type().is_none() => {
                 if let Some(lhs_tuple) = lhs.exact_tuple_instance_spec(db)
                     && let Some(rhs_tuple) = rhs.exact_tuple_instance_spec(db)
                 {

@@ -49,3 +49,24 @@ def _(one_two: OneTwo, x: IntTuple, y: StrTuple, three_four: ThreeFour):
     reveal_type(one_two + x + three_four)  # revealed: tuple[Literal[1], Literal[2], *tuple[int, ...], Literal[3], Literal[4]]
     reveal_type(one_two + y + three_four + x)  # revealed: tuple[Literal[1], Literal[2], *tuple[int | str, ...]]
 ```
+
+## Augmented concatenation in loops
+
+The non-in-place fallback for `+=` should not infer an increasingly precise fixed tuple shape on
+every cycle iteration.
+
+```py
+from typing import TypeAlias
+
+Key: TypeAlias = tuple[str, ...]
+
+def flag() -> bool:
+    return True
+
+def parse_key(key_part: str) -> Key:
+    key: Key = (key_part,)
+    while flag():
+        key += (key_part,)
+    reveal_type(key)  # revealed: tuple[str, ...]
+    return key
+```
