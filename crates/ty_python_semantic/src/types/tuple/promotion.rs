@@ -3,10 +3,10 @@ use rustc_hash::FxHashSet;
 use ruff_python_ast as ast;
 
 use crate::Db;
-use crate::types::tuple::{TupleSpec, TupleType, VariableLengthTuple};
+use crate::types::tuple::{TupleLength, TupleSpec};
 use crate::types::typevar::BoundTypeVarIdentity;
 use crate::types::visitor::any_over_type;
-use crate::types::{Type, UnionBuilder, UnionType};
+use crate::types::{Type, UnionBuilder};
 
 /// Tracks the typevars of a collection to which tuple size promotion should **not** apply.
 #[derive(Default)]
@@ -65,7 +65,7 @@ enum TupleSizePromotionCandidate<'db> {
     Empty,
     Homogeneous {
         element_type: Type<'db>,
-        length: usize,
+        length: TupleLength,
     },
 }
 
@@ -73,22 +73,35 @@ impl<'db> TupleSizePromotionCandidate<'db> {
     /// Returns an eligible candidate if the given type represents one (i.e., it is a
     /// fixed-length homogeneous tuple or the empty tuple).
     fn from_type(db: &'db dyn Db, ty: Type<'db>) -> Option<Self> {
+        Self::from_type_impl(db, ty, false)
+    }
+
+    fn from_type_cycle_recovery(db: &'db dyn Db, ty: Type<'db>) -> Option<Self> {
+        Self::from_type_impl(db, ty, true)
+    }
+
+    fn from_type_impl(db: &'db dyn Db, ty: Type<'db>, include_variable: bool) -> Option<Self> {
         let tuple_spec = ty.exact_tuple_instance_spec(db)?;
-        let TupleSpec::Fixed(tuple) = tuple_spec.as_ref() else {
-            return None;
-        };
+        match tuple_spec.as_ref() {
+            TupleSpec::Fixed(tuple) => {
+                let mut elements = tuple.iter_all_elements();
+                let Some(element_type) = elements.next() else {
+                    return Some(Self::Empty);
+                };
 
-        let mut elements = tuple.iter_all_elements();
-        let Some(element_type) = elements.next() else {
-            return Some(Self::Empty);
-        };
-
-        elements
-            .all(|element| element.is_equivalent_to(db, element_type))
-            .then_some(Self::Homogeneous {
-                element_type,
+                elements
+                    .all(|element| element.is_equivalent_to(db, element_type))
+                    .then_some(Self::Homogeneous {
+                        element_type,
+                        length: TupleLength::Fixed(tuple.len()),
+                    })
+            }
+            TupleSpec::Variable(tuple) if include_variable => Some(Self::Homogeneous {
+                element_type: tuple_spec.as_ref().homogeneous_element_type(db),
                 length: tuple.len(),
-            })
+            }),
+            TupleSpec::Variable(_) => None,
+        }
     }
 }
 
@@ -97,12 +110,12 @@ impl<'db> TupleSizePromotionCandidate<'db> {
 struct HomogeneousTupleUnionGroup<'db> {
     element_type: Type<'db>,
     original_tuple_types: Vec<Type<'db>>,
-    first_length: usize,
+    first_length: TupleLength,
     has_multiple_lengths: bool,
 }
 
 impl<'db> HomogeneousTupleUnionGroup<'db> {
-    fn new(element_type: Type<'db>, original_tuple_type: Type<'db>, length: usize) -> Self {
+    fn new(element_type: Type<'db>, original_tuple_type: Type<'db>, length: TupleLength) -> Self {
         Self {
             element_type,
             original_tuple_types: vec![original_tuple_type],
@@ -112,104 +125,9 @@ impl<'db> HomogeneousTupleUnionGroup<'db> {
     }
 
     /// Adds a tuple to this homogeneous union group.
-    fn add(&mut self, original_tuple_type: Type<'db>, length: usize) {
+    fn add(&mut self, original_tuple_type: Type<'db>, length: TupleLength) {
         self.has_multiple_lengths |= length != self.first_length;
         self.original_tuple_types.push(original_tuple_type);
-    }
-}
-
-struct VariableTupleUnionElement<'db> {
-    original_tuple_type: Type<'db>,
-    prefix: Vec<Type<'db>>,
-    variable: Type<'db>,
-    suffix: Vec<Type<'db>>,
-}
-
-impl<'db> VariableTupleUnionElement<'db> {
-    fn from_type(db: &'db dyn Db, ty: Type<'db>) -> Option<Self> {
-        let tuple_spec = ty.exact_tuple_instance_spec(db)?;
-        let TupleSpec::Variable(tuple) = tuple_spec.as_ref() else {
-            return None;
-        };
-
-        Some(Self {
-            original_tuple_type: ty,
-            prefix: tuple.prefix_elements().to_vec(),
-            variable: tuple.variable(),
-            suffix: tuple.suffix_elements().to_vec(),
-        })
-    }
-}
-
-struct VariableTupleUnionGroup<'db> {
-    entries: Vec<VariableTupleUnionElement<'db>>,
-}
-
-impl<'db> VariableTupleUnionGroup<'db> {
-    fn new(entry: VariableTupleUnionElement<'db>) -> Self {
-        Self {
-            entries: vec![entry],
-        }
-    }
-
-    fn add(&mut self, entry: VariableTupleUnionElement<'db>) {
-        self.entries.push(entry);
-    }
-
-    fn matches(&self, db: &'db dyn Db, entry: &VariableTupleUnionElement<'db>) -> bool {
-        self.entries[0]
-            .variable
-            .is_equivalent_to(db, entry.variable)
-    }
-
-    fn needs_promotion(&self, db: &'db dyn Db) -> bool {
-        let [first, rest @ ..] = self.entries.as_slice() else {
-            return false;
-        };
-
-        rest.iter().any(|entry| {
-            !equivalent_type_slices(db, &first.prefix, &entry.prefix)
-                || !equivalent_type_slices(db, &first.suffix, &entry.suffix)
-        })
-    }
-
-    fn promoted_tuple_type(&self, db: &'db dyn Db) -> Type<'db> {
-        let common_prefix = self.common_prefix(db);
-        let variable = UnionType::from_elements_cycle_recovery(
-            db,
-            self.entries.iter().flat_map(|entry| {
-                std::iter::once(entry.variable)
-                    .chain(entry.prefix.iter().skip(common_prefix.len()).copied())
-                    .chain(entry.suffix.iter().copied())
-            }),
-        );
-
-        Type::tuple(TupleType::new(
-            db,
-            &TupleSpec::Variable(VariableLengthTuple::new(common_prefix, variable, [])),
-        ))
-    }
-
-    fn common_prefix(&self, db: &'db dyn Db) -> Vec<Type<'db>> {
-        let [first, rest @ ..] = self.entries.as_slice() else {
-            return Vec::new();
-        };
-
-        first
-            .prefix
-            .iter()
-            .copied()
-            .enumerate()
-            .take_while(|(index, ty)| {
-                rest.iter().all(|entry| {
-                    entry
-                        .prefix
-                        .get(*index)
-                        .is_some_and(|other| other.is_equivalent_to(db, *ty))
-                })
-            })
-            .map(|(_, ty)| ty)
-            .collect()
     }
 }
 
@@ -218,12 +136,19 @@ impl<'db> VariableTupleUnionGroup<'db> {
 fn partition_tuple_union_elements<'db>(
     db: &'db dyn Db,
     elements: impl IntoIterator<Item = Type<'db>>,
+    include_variable: bool,
 ) -> (Vec<Type<'db>>, Vec<HomogeneousTupleUnionGroup<'db>>) {
     let mut other_union_elements = Vec::new();
     let mut tuple_groups: Vec<HomogeneousTupleUnionGroup<'db>> = Vec::new();
 
     for element in elements {
-        match TupleSizePromotionCandidate::from_type(db, element) {
+        let candidate = if include_variable {
+            TupleSizePromotionCandidate::from_type_cycle_recovery(db, element)
+        } else {
+            TupleSizePromotionCandidate::from_type(db, element)
+        };
+
+        match candidate {
             Some(TupleSizePromotionCandidate::Homogeneous {
                 element_type,
                 length,
@@ -242,40 +167,6 @@ fn partition_tuple_union_elements<'db>(
                 }
             }
             Some(TupleSizePromotionCandidate::Empty) | None => other_union_elements.push(element),
-        }
-    }
-
-    (other_union_elements, tuple_groups)
-}
-
-fn equivalent_type_slices<'db>(db: &'db dyn Db, left: &[Type<'db>], right: &[Type<'db>]) -> bool {
-    left.len() == right.len()
-        && left
-            .iter()
-            .zip(right)
-            .all(|(left, right)| left.is_equivalent_to(db, *right))
-}
-
-fn partition_variable_tuple_union_elements<'db>(
-    db: &'db dyn Db,
-    elements: impl IntoIterator<Item = Type<'db>>,
-) -> (Vec<Type<'db>>, Vec<VariableTupleUnionGroup<'db>>) {
-    let mut other_union_elements = Vec::new();
-    let mut tuple_groups: Vec<VariableTupleUnionGroup<'db>> = Vec::new();
-
-    for element in elements {
-        let Some(entry) = VariableTupleUnionElement::from_type(db, element) else {
-            other_union_elements.push(element);
-            continue;
-        };
-
-        if let Some(group) = tuple_groups
-            .iter_mut()
-            .find(|group| group.matches(db, &entry))
-        {
-            group.add(entry);
-        } else {
-            tuple_groups.push(VariableTupleUnionGroup::new(entry));
         }
     }
 
@@ -305,12 +196,28 @@ impl<'db> Type<'db> {
     /// ```
     ///
     pub(crate) fn promote_tuple_size_in_union(self, db: &'db dyn Db) -> Type<'db> {
+        self.promote_tuple_size_impl(db, false)
+    }
+
+    /// Promotes recursive tuple-size growth during Salsa cycle recovery.
+    ///
+    /// This includes the collection-literal promotion above, plus variable-length tuple shapes
+    /// whose fixed prefix or suffix keeps growing across iterations (for example, repeated `+=`
+    /// on a `tuple[T, ...]`).
+    pub(crate) fn promote_tuple_size_in_cycle_recovery(self, db: &'db dyn Db) -> Type<'db> {
+        self.promote_tuple_size_impl(db, true)
+    }
+
+    fn promote_tuple_size_impl(self, db: &'db dyn Db, include_variable: bool) -> Type<'db> {
         let Type::Union(union) = self else {
             return self;
         };
 
-        let (other_union_elements, tuple_groups) =
-            partition_tuple_union_elements(db, union.elements(db).iter().copied());
+        let (other_union_elements, tuple_groups) = partition_tuple_union_elements(
+            db,
+            union.elements(db).iter().copied(),
+            include_variable,
+        );
 
         if !tuple_groups.iter().any(|group| group.has_multiple_lengths) {
             return self;
@@ -330,46 +237,6 @@ impl<'db> Type<'db> {
             } else {
                 for element in group.original_tuple_types {
                     builder = builder.add(element);
-                }
-            }
-        }
-
-        builder.build()
-    }
-
-    /// Promotes recursive tuple-size growth during Salsa cycle recovery.
-    ///
-    /// This includes the collection-literal promotion above, plus variable-length tuple shapes
-    /// whose fixed suffix keeps growing across iterations (for example, repeated `+=` on a
-    /// `tuple[T, ...]`).
-    pub(crate) fn promote_tuple_size_in_cycle_recovery(self, db: &'db dyn Db) -> Type<'db> {
-        let ty = self.promote_tuple_size_in_union(db);
-
-        let Type::Union(union) = ty else {
-            return ty;
-        };
-
-        let (other_union_elements, tuple_groups) =
-            partition_variable_tuple_union_elements(db, union.elements(db).iter().copied());
-
-        if !tuple_groups.iter().any(|group| group.needs_promotion(db)) {
-            return ty;
-        }
-
-        let mut builder = UnionBuilder::new(db)
-            .unpack_aliases(false)
-            .recursively_defined(union.recursively_defined(db));
-
-        for element in other_union_elements {
-            builder = builder.add(element);
-        }
-
-        for group in tuple_groups {
-            if group.needs_promotion(db) {
-                builder = builder.add(group.promoted_tuple_type(db));
-            } else {
-                for entry in group.entries {
-                    builder = builder.add(entry.original_tuple_type);
                 }
             }
         }
