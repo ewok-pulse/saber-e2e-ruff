@@ -1021,7 +1021,7 @@ impl<'db> Type<'db> {
             UnionType::from_elements_cycle_recovery(db, [previous, self])
         };
 
-        ty.promote_tuple_size_in_union(db)
+        ty.promote_tuple_size_in_cycle_recovery(db)
             .recursive_type_normalized(db, cycle)
     }
 

@@ -52,9 +52,10 @@ def _(one_two: OneTwo, x: IntTuple, y: StrTuple, three_four: ThreeFour):
 
 ## Augmented concatenation in loops
 
-Cycle recovery should not infer an increasingly precise fixed tuple shape on every iteration.
+Cycle recovery should not infer an increasingly precise tuple shape on every iteration.
 
 ```py
+from collections.abc import Hashable, Mapping
 from typing import TypeAlias
 
 Key: TypeAlias = tuple[str, ...]
@@ -67,5 +68,22 @@ def parse_key(key_part: str) -> Key:
     while flag():
         key += (key_part,)
     reveal_type(key)  # revealed: tuple[str, ...]
+    return key
+
+def append_flag(state: tuple[object, ...], alias_is_default: bool) -> tuple[object, ...]:
+    while flag():
+        state = (*state, alias_is_default)
+    reveal_type(state)  # revealed: tuple[object, ...]
+    return state
+
+_marker: tuple[object] = (object(),)
+
+def make_key(args: tuple[object, ...], kwds: Mapping[object, object]) -> Hashable:
+    key: tuple[object, ...] = args
+    if kwds:
+        key += _marker
+        for item in kwds.items():
+            key += item
+    reveal_type(key)  # revealed: tuple[object, ...]
     return key
 ```
